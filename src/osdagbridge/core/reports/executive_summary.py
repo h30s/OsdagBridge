@@ -2,7 +2,12 @@
 # EXECUTIVE SUMMARY
 # ═══════════════════════════════════════════════════════════════════════════════
 
+import os
+
+from osdagbridge.core.reports import charts as _charts, verdict as _verdict
 from osdagbridge.core.reports.report_utils import _fig_or_placeholder, _render_value, _tex, get_girder_entries
+from osdagbridge.core.reports.styles import (
+    figure_block, fail_text, fit_colspec, pass_text, ur_cell, verdict_banner)
 from osdagbridge.core.utils.common import (
     KEY_CARRIAGEWAY_WIDTH,
     KEY_SD_SECTION_DESIGNATION,
@@ -54,7 +59,59 @@ def _max_member_efficiency(pair_designs):
     return best
 
 
-def executive_summary(input_dict, output_dict, fig_paths) -> str:
+_ELEMENT_PREFIX = {"Steel Plate Girders": "Girder", "Concrete Deck Slab": "Deck",
+                   "Cross Bracing": "Cross Bracing", "End Diaphragms": "End Diaphragm"}
+
+
+def _verdict_banner(overall, verdicts, ur_records) -> str:
+    """Boxed overall verdict with the number of checks and the worst failing check."""
+    n_checks = sum(v.n_checks for v in verdicts)
+    failing = _verdict.failing_checks(ur_records)
+    headline = {"Pass": "DESIGN SATISFIES ALL EVALUATED CHECKS",
+                "Fail": "DESIGN DOES NOT SATISFY ALL CHECKS"}.get(overall, "DESIGN NOT EVALUATED")
+    if n_checks == 0:
+        detail = _tex("No utilization ratios were available for this report.")
+    elif failing:
+        worst = _tex(_verdict.clean_label(failing[0][0]))
+        detail = (f"{n_checks} checks evaluated; {len(failing)} exceed UR = 1.0. "
+                  f"Worst: {worst} (UR = {failing[0][1]:.2f}).")
+    else:
+        detail = f"{n_checks} checks evaluated; all within UR $\\leq$ 1.0."
+    return verdict_banner(overall, headline, detail)
+
+
+def _outcomes_block(verdicts, images_dir) -> str:
+    """Per-element outcome table (derived from the results, never hard-coded) + chart."""
+    spec = fit_colspec(r"|L{4.2cm}|C{2.6cm}|C{1.9cm}|L{4.6cm}|C{2.0cm}|")
+    rows = []
+    for v in verdicts:
+        if v.status == "Pass":
+            status = pass_text("Pass")
+        elif v.status == "Fail":
+            status = fail_text("Fail")
+        else:
+            status = r"\textcolor{noteGrey}{Not evaluated}"
+        ur = ur_cell(v.max_ur, f"{v.max_ur:.2f}") if v.max_ur is not None else "---"
+        gov = _tex(v.governing) if v.governing else "---"
+        rows.append(f"{_tex(v.element)} & {status} & {ur} & {gov} & "
+                    f"{v.n_failing} / {v.n_checks} \\\\[3pt]\n\\hline")
+    tex = (r"\noindent" + "\n" + r"\begin{tabular}{" + spec + "}\n\\hline\n"
+           + r"\rowcolor{tableHead}\textbf{Element} & \textbf{Status} & \textbf{Max UR} & "
+             r"\textbf{Governing check} & \textbf{Failing} \\[3pt]" + "\n\\hline\n"
+           + "\n".join(rows) + "\n\\end{tabular}\n"
+           + r"\par\vspace{0.3em}\noindent\textit{Status is derived from the utilization ratios of Section 5.5 "
+             r"(UR = Demand / Capacity; $\leq$ 1.0 passes).}" + "\n")
+    if images_dir:
+        chart_rows = [(_ELEMENT_PREFIX[v.element] + " --- governing", v.max_ur) for v in verdicts]
+        path = _charts.ur_governing_chart(chart_rows, os.path.join(images_dir, "ur_summary_exec.png"))
+        if path:
+            tex += "\n" + figure_block("images/ur_summary_exec.png",
+                                       "Governing utilization ratio of each primary element.", r"0.78\textwidth",
+                                       numbered=False)
+    return tex
+
+
+def executive_summary(input_dict, output_dict, fig_paths, ur_records=None, images_dir=None) -> str:
     plan_fig = _fig_or_placeholder(fig_paths.get('girder_top'), 'Figure 1 -- Overall Bridge Plan')
     cs_fig = _fig_or_placeholder(fig_paths.get('cross_section'),
                                   'Figure 2 -- Typical Cross-Section (with girder, deck, barriers, footpath)')
@@ -127,6 +184,26 @@ def executive_summary(input_dict, output_dict, fig_paths) -> str:
     else:
         overall_utilization_ratio = ""
 
+    # ── Verdict: ONE source of truth shared with Table 5.22 and the UR charts ──
+    # Chapter 5 supplies the UR records; if it was not generated, fall back to the
+    # maxima computed above. An element without data is "Not evaluated", never "Pass".
+    if ur_records is None:
+        ur_records = [("Girder --- governing", girder_max_ur), ("Deck --- governing", deck_max),
+                      ("Cross Bracing --- governing", _max_member_efficiency(cb_results)),
+                      ("End Diaphragm --- governing", _max_member_efficiency(ed_results))]
+    verdicts = _verdict.element_verdicts(ur_records)
+    overall = _verdict.overall_status(verdicts)
+    top = _verdict.governing_overall(verdicts)
+    if top is not None:
+        overall_utilization_ratio = f"{top.max_ur:.2f} ({top.element})"
+    if overall == "Fail" and not failing:        # a non-girder element fails
+        overall_design_status = "Fail (" + ", ".join(
+            _verdict.clean_label(lbl) for lbl, _ in _verdict.failing_checks(ur_records)[:4]) + ")"
+    elif overall == "Pass" and not overall_design_status:
+        overall_design_status = "Pass"
+    banner_tex = _verdict_banner(overall, verdicts, ur_records)
+    outcomes_tex = _outcomes_block(verdicts, images_dir)
+
     gov = _tex(gov_name) if gov_name not in (None, '', 'None') else ''
     ur = _tex(overall_utilization_ratio) if overall_utilization_ratio else ''
 
@@ -185,6 +262,7 @@ def executive_summary(input_dict, output_dict, fig_paths) -> str:
 
 This section provides a concise summary of the bridge design, key inputs, governing loads, and final design outcomes.
 
+""" + banner_tex + r"""
 \section*{Project Overview}
 \addcontentsline{toc}{section}{Project Overview}
 \label{sec:project-overview}
@@ -202,9 +280,9 @@ This section provides a concise summary of the bridge design, key inputs, govern
 \hline
 \textbf{No. of Girders} & """ + (_render_value(input_dict, KEY_TS_NO_OF_GIRDERS)) + r""" \\
 \hline
-\textbf{Girder Spacing} & """ + (_render_value(input_dict, KEY_TS_GIRDER_SPACING)) + r""" \\
+\textbf{Girder Spacing} & """ + (_render_value(input_dict, KEY_TS_GIRDER_SPACING, ' m')) + r""" \\
 \hline
-\textbf{Deck Thickness} & """ + (_render_value(input_dict, KEY_TS_DECK_THICKNESS)) + r""" \\
+\textbf{Deck Thickness} & """ + (_render_value(input_dict, KEY_TS_DECK_THICKNESS, ' mm')) + r""" \\
 \hline
 \textbf{Overall Design Status} & """ + (_tex(overall_design_status)) + r""" \\
 \hline
@@ -230,10 +308,7 @@ This section provides a concise summary of the bridge design, key inputs, govern
 \addcontentsline{toc}{section}{Key Design Outcomes Summary}
 \label{sec:key-outcomes}
 
-\noindent Girder design pass \\
-Cross bracing design pass \\
-End Diaphragm design pass \\
-Deck design pass
+""" + outcomes_tex + r"""
 
 \section*{Design Assumptions and Limitations}
 \addcontentsline{toc}{section}{Design Assumptions and Limitations}

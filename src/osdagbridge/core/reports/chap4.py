@@ -1,3 +1,4 @@
+from osdagbridge.core.reports.styles import dense_table_setup, fail_text, longtable_head, pass_text, table_note
 from typing import TYPE_CHECKING
 from osdagbridge.core.utils.common import (
     KEY_SPAN,
@@ -5,7 +6,7 @@ from osdagbridge.core.utils.common import (
     KEY_SD_DEFL_LIVE,
     KEY_SD_DEFL_TOTAL,
 )
-from osdagbridge.core.reports.report_utils import _tex, _fig_embed
+from osdagbridge.core.reports.report_utils import _tex, _fig_embed, load_case_sort_key
 
 if TYPE_CHECKING:
     from .report_generator import ReportDataBridge
@@ -42,7 +43,7 @@ def ch4_analysis(asum, fig_paths, bridge: "ReportDataBridge", span_m: float):
             + _fmt(rxn_d.get('right_kN'))        + r" \\[6pt]"
         )
 
-    all_lcs = list(lc_summary.keys()) + [k for k in rxn_summary if k not in lc_summary]
+    all_lcs = sorted(set(lc_summary) | set(rxn_summary), key=load_case_sort_key)
 
     merged_body = ("\n\\hline\n").join(
         _merged_row(lc, lc_summary.get(lc), rxn_summary.get(lc))
@@ -73,8 +74,18 @@ def ch4_analysis(asum, fig_paths, bridge: "ReportDataBridge", span_m: float):
     _total_str       = f"{_total_mm:.3f} mm" if _total_mm is not None else "---"
     _allow_live_str  = f"L/800 = {_allow_live_mm:.1f} mm"
     _allow_total_str = f"L/600 = {_allow_total_mm:.1f} mm"
-    _live_status     = ("PASS" if _live_mm  <= _allow_live_mm  else r"\textcolor{red}{FAIL}") if _live_mm  is not None else "---"
-    _total_status    = ("PASS" if _total_mm <= _allow_total_mm else r"\textcolor{red}{FAIL}") if _total_mm is not None else "---"
+    _live_status     = (pass_text() if _live_mm  <= _allow_live_mm  else fail_text()) if _live_mm  is not None else "---"
+    _total_status    = (pass_text() if _total_mm <= _allow_total_mm else fail_text()) if _total_mm is not None else "---"
+    # Table 4.2 - reactions at the supports for the key load cases (falls back to all).
+    _KEY_LCS = ("Envelope ULS", "Envelope SLS", "1.0 DL", "1.0 DW", "SW", "DD", "1.0 LL")
+    _sel = [lc for lc in _KEY_LCS if lc in rxn_summary] or list(rxn_summary)
+    if _sel:
+        rxn_rows = "\n\\hline\n".join(
+            _tex(lc) + " & " + _fmt(rxn_summary[lc].get("left_kN")) + " & "
+            + _fmt(rxn_summary[lc].get("right_kN")) + r" \\[6pt]" for lc in _sel) + "\n\\hline"
+    else:
+        rxn_rows = r"--- & --- & --- \\[6pt]" + "\n\\hline"
+
     return r"""
 \chapter{Analysis Results}
 
@@ -82,9 +93,7 @@ A grillage model was used for structural analysis. The deck is idealized as a gr
 
 \vspace{1em}
 \begingroup
-\footnotesize
-\setlength{\tabcolsep}{3pt}
-\renewcommand{\arraystretch}{1.25}
+""" + dense_table_setup() + r"""
 
 \begin{longtable}{|
 >{\centering\arraybackslash}p{3.1cm}|
@@ -141,25 +150,12 @@ A grillage model was used for structural analysis. The deck is idealized as a gr
 \endgroup
 
 \vspace{1em}
-\begin{longtable}{|>{\centering\arraybackslash}p{5.2cm}|>{\centering\arraybackslash}p{5.2cm}|>{\centering\arraybackslash}p{5.2cm}|}
-\caption{\textbf{Reactions at Supports}}
-\hline
-\textbf{Load Case} & \textbf{Left Support (kN)} & \textbf{Right Support (kN)} \\[6pt]
-\hline
- & """ + '' + r""" & """ + '' + r""" \\[6pt]
-\hline
- & """ + '' + r""" & """ + '' + r""" \\[6pt]
-\hline
- & """ + '' + r""" & """ + '' + r""" \\[6pt]
-\hline
+""" + longtable_head(r"""|>{\centering\arraybackslash}p{5.2cm}|>{\centering\arraybackslash}p{5.2cm}|>{\centering\arraybackslash}p{5.2cm}|""", r"""\textbf{Reactions at Supports}""", r"""\textbf{Load Case} & \textbf{Left Support (kN)} & \textbf{Right Support (kN)} \\[6pt]""") + r"""
+""" + rxn_rows + r"""
 \end{longtable}
 
 \vspace{1em}
-\begin{longtable}{|L{7cm}|p{8.5cm}|}
-\caption{\textbf{Deflection Summary (Live Load \& Total Load)}}
-\hline
-\textbf{parameter} & \textbf{value} \\
-\hline
+""" + longtable_head(r"""|L{7cm}|p{8.5cm}|""", r"""\textbf{Deflection Summary (Live Load \& Total Load)}""", r"""\textbf{Parameter} & \textbf{Value} \\""") + r"""
 \textnormal{Deflection due to Live Load, $\delta_{LL}$} & """ + _live_str + r""" \\[6pt]
 \hline
 \textnormal{Allowable Live Load Deflection ($\Delta_{allow}$)} & """ + _allow_live_str + r""" \\[6pt]

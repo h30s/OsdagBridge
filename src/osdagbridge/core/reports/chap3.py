@@ -3,7 +3,11 @@
 # Extracted from report_generator.py — DO NOT add business logic here.
 # =============================================================================
 
+from osdagbridge.core.reports.styles import longtable_head, fail_text, pass_text, table_note
 from osdagbridge.core.utils.common import (
+    KEY_CARRIAGEWAY_WIDTH,
+    KEY_FOOTPATH,
+    KEY_LL_ECCENTRICITY,
     KEY_CB_LOAD,
     KEY_LL_CUSTOM_VEHICLES,
     KEY_LL_FOOTPATH_PRESSURE_MODE,
@@ -55,6 +59,113 @@ from osdagbridge.core.utils.common import (
 
 from osdagbridge.core.reports.report_utils import _tex, _render_value
 
+
+# -----------------------------------------------------------------------------
+# Live-load tables (vehicular and footpath are separate tables)
+# -----------------------------------------------------------------------------
+_VEHICLE_REF = {
+    "Class A": "IRC 6 Cl. 204.1",
+    "Class 70R (Wheeled)": "IRC 6 Cl. 204.1",
+    "Class 70R (Tracked)": "IRC 6 Cl. 204.1",
+    "Class 70R (Bogie)": "IRC 6 Cl. 204.1",
+    "Class AA (Wheeled)": "IRC 6 Cl. 204.1",
+    "Class AA (Tracked)": "IRC 6 Cl. 204.1",
+    "Class SV": "IRC 6 Cl. 204.5",
+    "Class Fatigue": "IRC 6 Cl. 204.6",
+}
+_NA = "---"
+
+
+def _impact_for(name, impact_a, impact_aa):
+    """Impact factor (1+IM) for one vehicle class; '---' when not applicable."""
+    if name == "Class A":
+        val = impact_a
+    elif name.startswith(("Class 70R", "Class AA")):
+        val = impact_aa
+    else:
+        val = None
+    return f"{val:.3f}" if val is not None else _NA
+
+
+def _footpath_pressure(input_dict):
+    """Footpath live-load intensity in kN/m^2 (float) or None."""
+    from osdagbridge.core.utils.codes.irc6_2017 import IRC6_2017
+    mode = str(input_dict.get(KEY_LL_FOOTPATH_PRESSURE_MODE, "")).strip().lower()
+    value = input_dict.get(KEY_LL_FOOTPATH_PRESSURE_VALUE, "")
+    try:
+        if mode in ("as per irc 6", "as per irc6", "automatic"):
+            return float(IRC6_2017.cl_206_1_footway_load())
+        if value not in (None, ""):
+            return float(value)
+    except Exception:
+        pass
+    return None
+
+
+def live_load_tables(input_dict, vehicles, impact_a, impact_aa, lanes, braking_t):
+    """Return LaTeX for the vehicular and footpath live-load tables."""
+    # ---- Table: vehicle classes selected in Additional Inputs -> Loading ----
+    veh_rows = []
+    for i, name in enumerate(vehicles, start=1):
+        ref = _VEHICLE_REF.get(name, "User defined")
+        veh_rows.append(rf"{i} & {_tex(name)} & {_tex(ref)} & {_impact_for(name, impact_a, impact_aa)} \\[6pt]" + "\n\\hline")
+    if not veh_rows:
+        veh_rows.append(r"--- & No vehicle class selected & --- & --- \\[6pt]" + "\n\\hline")
+    t_veh = (longtable_head(
+        r"|C{1.2cm}|L{5.4cm}|C{4.0cm}|C{4.0cm}|",
+        r"\textbf{Live Loads -- Vehicular (IRC 6)}",
+        r"\textbf{S.N.} & \textbf{Vehicle Class} & \textbf{Reference} & \textbf{Impact Factor (1+IM)}")
+        + "\n".join(veh_rows) + "\n\\end{longtable}\n"
+        + table_note(r"Vehicle classes are those selected in Additional Inputs $\rightarrow$ Loading. "
+                     r"Impact factors per IRC 6 Cl. 208.2 (Class A) and Cl. 208.3 (Class 70R / AA)."))
+
+    # ---- Table: parameters common to vehicular loading, with unit column ----
+    lanes_txt = str(int(lanes)) if lanes not in (None, "") else _NA
+    if braking_t is not None:
+        braking_kn, braking_tn = f"{braking_t * 9.81:.2f}", f"{braking_t:.2f}"
+    else:
+        braking_kn = braking_tn = _NA
+    ecc = input_dict.get(KEY_LL_ECCENTRICITY)
+    ecc_txt = _render_value(input_dict, KEY_LL_ECCENTRICITY) if ecc not in (None, "") else _NA
+    par_rows = [
+        ("Number of design lanes", lanes_txt, "--", "IRC 6 Table 6"),
+        ("Braking force", braking_kn, "kN", "IRC 6 Cl. 211.2"),
+        ("Braking force (equivalent)", braking_tn, "tonne", "IRC 6 Cl. 211.2"),
+        ("Centrifugal force", "Not considered", "--", "IRC 6 Cl. 212 (straight alignment)"),
+        ("Eccentricity of live load", ecc_txt, "m", "---"),
+    ]
+    body = "\n".join(
+        rf"\textnormal{{{p}}} & {v} & {u} & {_tex(r)} \\[6pt]" + "\n\\hline" for p, v, u, r in par_rows)
+    t_par = (longtable_head(
+        r"|L{5.0cm}|C{3.4cm}|C{2.0cm}|L{5.0cm}|",
+        r"\textbf{Live Loads -- Associated Vehicular Parameters}",
+        r"\textbf{Parameter} & \textbf{Value} & \textbf{Unit} & \textbf{Reference}")
+        + body + "\n\\end{longtable}\n"
+        + table_note("Centrifugal force applies to bridges on a curve; no curvature is defined in the model."))
+
+    # ---- Table: footpath live load ----
+    fp_mode = input_dict.get(KEY_FOOTPATH)
+    has_fp = str(fp_mode).strip().lower() not in ("", "none")
+    pressure = _footpath_pressure(input_dict)
+    if has_fp:
+        fp_rows = [
+            ("Footpath provision", _tex(str(fp_mode)), "--", "---"),
+            ("Footpath live load intensity",
+             f"{pressure:.3f}" if pressure is not None else _NA, "kN/m\\textsuperscript{2}", "IRC 6 Cl. 206.1"),
+        ]
+    else:
+        fp_rows = [("Footpath provision", "None", "--", "---"),
+                   ("Footpath live load intensity", "Not applicable", "--", "IRC 6 Cl. 206.1")]
+    body = "\n".join(
+        rf"\textnormal{{{p}}} & {v} & {u} & {_tex(r)} \\[6pt]" + "\n\\hline" for p, v, u, r in fp_rows)
+    t_fp = (longtable_head(
+        r"|L{5.0cm}|C{3.4cm}|C{2.0cm}|L{5.0cm}|",
+        r"\textbf{Live Loads -- Footpath}",
+        r"\textbf{Parameter} & \textbf{Value} & \textbf{Unit} & \textbf{Reference}")
+        + body + "\n\\end{longtable}\n")
+    return t_veh + "\n\\vspace{1em}\n" + t_par + "\n\\vspace{1em}\n" + t_fp
+
+
 def ch3_loads(input_dict):
     # Live load vehicle names mapping
     vehicles = []
@@ -88,6 +199,7 @@ def ch3_loads(input_dict):
     from osdagbridge.core.utils.codes.irc6_2017 import IRC6_2017
     span = input_dict.get(KEY_SPAN)
     impact_factor_str = ""
+    impact_a = impact_aa = None
     if span not in (None, ""):
         try:
             span_m = float(span)
@@ -95,6 +207,7 @@ def ch3_loads(input_dict):
             if input_dict.get(KEY_LL_IRC_CLASS_A):
                 im_a = IRC6_2017.cl_208_2_impact_factor(span_m)
                 factors.append(f"Class A: {1.0 + im_a:.3f}")
+                impact_a = 1.0 + im_a
             is_wheeled_heavy = (
                 input_dict.get(KEY_LL_IRC_70R_WHEELED) or 
                 input_dict.get(KEY_LL_IRC_AA_WHEELED) or 
@@ -107,6 +220,7 @@ def ch3_loads(input_dict):
             if is_wheeled_heavy or is_tracked_heavy:
                 im_aa = IRC6_2017.cl_208_3_impact_factor(span_m)
                 factors.append(f"Class AA/70R: {1.0 + im_aa:.3f}")
+                impact_aa = 1.0 + im_aa
             
             if factors:
                 impact_factor_str = ", ".join(factors)
@@ -117,13 +231,20 @@ def ch3_loads(input_dict):
     else:
         impact_factor_str = "N/A"
 
-    lanes = input_dict.get(KEY_WC_LD_LANE_TABLE_COUNT)
+    lanes = None
+    try:
+        lanes = IRC6_2017.table_6(float(input_dict.get(KEY_CARRIAGEWAY_WIDTH)))
+    except Exception:
+        lanes = input_dict.get(KEY_WC_LD_LANE_TABLE_COUNT)
     braking_force_str = ""
+    braking_force_t = None
     if lanes not in (None, ""):
         try:
             lanes_int = int(lanes)
-            braking_force_t = IRC6_2017.cl_211_2_braking_force(lanes_int)
-            braking_force_kN = braking_force_t * 9.81
+            # cl_211_2_braking_force() works from wheel loads in N, so it returns Newtons.
+            braking_force_N = IRC6_2017.cl_211_2_braking_force(lanes_int)
+            braking_force_kN = braking_force_N / 1000.0
+            braking_force_t = braking_force_kN / 9.81   # tonne-force, for display
             braking_force_str = f"{braking_force_kN:.2f} kN ({braking_force_t:.2f} tonnes)"
         except Exception:
             braking_force_str = "N/A"
@@ -272,11 +393,7 @@ def ch3_loads(input_dict):
 This section summarizes all loads applied to the bridge and the load combinations considered for analysis and design.
 
 \vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Dead Load -- Self Weight}}
-\hline
-\textbf{parameter} & \textbf{value} \\
-\hline
+""" + longtable_head(r"""|L{5.5cm}|p{10.0cm}|""", r"""\textbf{Dead Load -- Self Weight}""", r"""\textbf{Parameter} & \textbf{Value} \\""") + r"""
 \textnormal{Steel Self-Weight Applied} & """ + (_render_value(input_dict, KEY_MATERIAL_GIRDER_DENSITY, ' kN/m\\textsuperscript{3}')) + r""" \\[6pt]
 \hline
 \textnormal{Concrete Deck Weight} & """ + (_render_value(input_dict, KEY_MATERIAL_DECK_DENSITY, ' kN/m\\textsuperscript{3}')) + r""" \\[6pt]
@@ -286,11 +403,7 @@ This section summarizes all loads applied to the bridge and the load combination
 \end{longtable}
 
 \vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Dead Load for Surfacing (DW)}}
-\hline
-\textbf{parameter} & \textbf{value} \\
-\hline
+""" + longtable_head(r"""|L{5.5cm}|p{10.0cm}|""", r"""\textbf{Dead Load for Surfacing (DW)}""", r"""\textbf{Parameter} & \textbf{Value} \\""") + r"""
 \textnormal{Wearing Course Load} & """ + (_render_value(input_dict, KEY_WC_MATERIAL)) + r""" x """ + (_render_value(input_dict, KEY_WC_THICKNESS)) + r""" \\[6pt]
 \hline
 \textnormal{Additional SIDL (Crash Barrier)} & """ + (_render_value(input_dict, KEY_CB_LOAD)) + r""" kN/m per barrier \\[6pt]
@@ -300,27 +413,9 @@ This section summarizes all loads applied to the bridge and the load combination
 \end{longtable}
 
 \vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Live Loads (LL)}}
-\hline
-\textbf{parameter} & \textbf{value} \\
-\hline
-\textnormal{Vehicles Considered} & """ + _tex(vehicles_str) + r""" \\[6pt]
-\hline
-\textnormal{Impact Factor (IRC 6)} & """ + _tex(impact_factor_str) + r""" \\[6pt]
-\hline
-\textnormal{Braking Load (IRC 6)} & """ + _tex(braking_force_str) + r""" \\[6pt]
-\hline
-\textnormal{Footpath Live Load (if applicable)} & """ + (_render_value(input_dict, KEY_LL_FOOTPATH_PRESSURE_VALUE, ' kN/m\\textsuperscript{2}')) + r""" \\[6pt]
-\hline
-\end{longtable}
-
+""" + live_load_tables(input_dict, vehicles, impact_a, impact_aa, lanes, braking_force_t) + r"""
 \vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Wind Load (WL) --- per IRC 6}}
-\hline
-\textbf{parameter} & \textbf{value} \\
-\hline
+""" + longtable_head(r"""|L{5.5cm}|p{10.0cm}|""", r"""\textbf{Wind Load (WL) --- per IRC 6}""", r"""\textbf{Parameter} & \textbf{Value} \\""") + r"""
 \textnormal{Basic Wind Speed, Vb} & """ + (_render_value(input_dict,'wind_speed', ' m/s')) + r""" [from Project Location] \\[6pt]
 \hline
 \textnormal{Terrain Type} & """ + (_render_value(input_dict, KEY_WL_TERRAIN_TYPE)) + r""" \\[6pt]
@@ -340,11 +435,7 @@ This section summarizes all loads applied to the bridge and the load combination
 \end{longtable}
 
 \vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Earthquake Load (EL) --- per IRC 6}}
-\hline
-\textbf{parameter} & \textbf{value} \\
-\hline
+""" + longtable_head(r"""|L{5.5cm}|p{10.0cm}|""", r"""\textbf{Earthquake Load (EL) --- per IRC 6}""", r"""\textbf{Parameter} & \textbf{Value} \\""") + r"""
 \textnormal{Seismic Zone} & """ + (_render_value(input_dict,'seismic_zone')) + r""" [from Project Location] \\[6pt]
 \hline
 \textnormal{Zone Factor, Z} & """ + (_render_value(input_dict, KEY_SL_ZONE_FACTOR)) + r""" \\[6pt]
@@ -359,18 +450,14 @@ This section summarizes all loads applied to the bridge and the load combination
 \hline
 \textnormal{Vertical Seismic Coefficient, Av} & """ + (_render_value(input_dict, KEY_SL_VERTICAL_COEFF)) + r""" \\[6pt]
 \hline
-\textnormal{Horizontal Seismic Force (longitudinal)} & """ + '' + r""" kN \\[6pt]
+\textnormal{Horizontal Seismic Force (longitudinal)} & --- \\[6pt]
 \hline
-\textnormal{Horizontal Seismic Force (transverse)} & """ + '' + r""" kN \\[6pt]
+\textnormal{Horizontal Seismic Force (transverse)} & --- \\[6pt]
 \hline
 \end{longtable}
 
 \vspace{1em}
-\begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Temperature Load (TL) --- per IRC 6}}
-\hline
-\textbf{parameter} & \textbf{value} \\
-\hline
+""" + longtable_head(r"""|L{5.5cm}|p{10.0cm}|""", r"""\textbf{Temperature Load (TL) --- per IRC 6}""", r"""\textbf{Parameter} & \textbf{Value} \\""") + r"""
 \textnormal{Maximum Shade Temperature} & """ + (_render_value(input_dict,'shade_temp_max')) + r""" $^\circ$C \\[6pt]
 \hline
 \textnormal{Minimum Shade Temperature} & """ + (_render_value(input_dict,'shade_temp_min')) + r""" $^\circ$C \\[6pt]
@@ -382,11 +469,7 @@ This section summarizes all loads applied to the bridge and the load combination
 \end{longtable}
 
 \vspace{1em}
-\begin{longtable}{|C{4.0cm}|p{11.5cm}|}
-\caption{\textbf{Load Combinations}}
-\hline
-\textbf{Combination ID} & \textbf{Load Cases} \\[6pt]
-\hline
+""" + longtable_head(r"""|C{4.0cm}|p{11.5cm}|""", r"""\textbf{Load Combinations}""", r"""\textbf{Combination ID} & \textbf{Load Cases} \\[6pt]""") + r"""
 """ + lc_rows_str + r"""
 \end{longtable}
 

@@ -889,8 +889,12 @@ class IRC6_2017:
         """
         Returns braking force as per IRC:6-2017 Clause 211.2.
         Returns:
-            float: Braking force in t (rounded to 3 decimal places)
+            float: Braking force in N (rounded to 3 decimal places). The wheel loads
+                   used are in N (see cl_204_1_ClassA_vehicle), not tonnes.
         """
+        # Both terms must exist for any lane count (lanes 1-2 never set braking_force_2).
+        braking_force_1 = 0.0
+        braking_force_2 = 0.0
         for lane in range(1, design_lanes + 1):
             if lane == 1 or lane == 2:
                 wheel_load = IRC6_2017.cl_204_1_ClassA_vehicle()['wheel_loads']

@@ -1,16 +1,16 @@
-def ch7_quantities(input_dict):
-    return r"""
+import os
+
+from osdagbridge.core.reports import charts as _charts
+from osdagbridge.core.reports.styles import figure_block, longtable_head, tabcolsep_cmd
+
+def ch7_quantities(input_dict, images_dir=None):
+    tex = r"""
 \chapter{Material Take-off \& Quantity Summary}
 \label{ch:material-takeoff}
 
-\noindent\textbf{Table 7.1  Bill of Materials (Steel, Concrete, and Reinforcement Quantities)}
-
 \begingroup
-\setlength{\tabcolsep}{3.5pt}
-\begin{longtable}{|C{1.0cm}|L{3.8cm}|C{2.6cm}|C{1.8cm}|C{1.8cm}|C{1.8cm}|C{1.8cm}|}
-\hline
-\textbf{S.N.} & \textbf{Item Description} & \textbf{Volume} & \textbf{Quantity} & \textbf{Total Volume} & \textbf{Weight (MT)} & \textbf{Total Weight (MT)} \\
-\hline
+""" + tabcolsep_cmd("dense") + r"""
+""" + longtable_head(r"""|C{1.0cm}|L{3.8cm}|C{2.6cm}|C{1.8cm}|C{1.8cm}|C{1.8cm}|C{1.8cm}|""", r"""\textbf{Bill of Materials (Steel, Concrete, and Reinforcement Quantities)}""", r"""\textbf{S.N.} & \textbf{Item Description} & \textbf{Volume} & \textbf{Quantity} & \textbf{Total Volume} & \textbf{Weight (MT)} & \textbf{Total Weight (MT)} \\""", density="dense") + r"""
 1 & Structural Steel (IS 2062) for Girders & """ + str(input_dict.get("steel_girders_vol_formula", "N.A.")) + r""" & """ + str(input_dict.get("steel_girders_qty", "N.A.")) + r""" & """ + str(input_dict.get("steel_girders_vol_total", "N.A.")) + r""" & """ + str(input_dict.get("steel_girders_wt_single", "N.A.")) + r""" & """ + str(input_dict.get("steel_girders_wt_total", "N.A.")) + r""" \\
 \hline
 2(a) & Cross Bracing - Top Chord & """ + str(input_dict.get("bracing_top_vol_formula", "N.A.")) + r""" & """ + str(input_dict.get("bracing_top_qty", "N.A.")) + r""" & """ + str(input_dict.get("bracing_top_vol_total", "N.A.")) + r""" & """ + str(input_dict.get("bracing_top_wt_single", "N.A.")) + r""" & """ + str(input_dict.get("bracing_top_wt_total", "N.A.")) + r""" \\
@@ -29,5 +29,14 @@ def ch7_quantities(input_dict):
 \hline
 \end{longtable}
 """
-
-
+    if images_dir:
+        _s = os.path.join(images_dir, "qty_steel.png")
+        _c = os.path.join(images_dir, "qty_concrete_rebar.png")
+        if _charts.steel_tonnage_chart(input_dict, _s):
+            tex += "\n\\vspace{1em}\n" + figure_block(
+                "images/qty_steel.png", r"Structural steel quantity (MT) by member group.", r"0.8\textwidth")
+        if _charts.concrete_vs_rebar_chart(input_dict, _c):
+            tex += "\n\\vspace{1em}\n" + figure_block(
+                "images/qty_concrete_rebar.png", r"Deck concrete volume (m$^3$) and reinforcement steel weight (MT).",
+                r"0.8\textwidth")
+    return tex

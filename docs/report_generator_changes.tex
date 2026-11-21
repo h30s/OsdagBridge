@@ -1,0 +1,209 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs,tabularx,array,enumitem,xcolor,hyperref,fancyhdr}
+\hypersetup{colorlinks=true,urlcolor=blue,linkcolor=black}
+\definecolor{osdagGreen}{HTML}{91B014}
+\newcommand{\file}[1]{\texttt{\detokenize{#1}}}
+\setlist{nosep,leftmargin=1.4em}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{OsdagBridge report generator -- technical changes}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrule}{\color{osdagGreen}\hrule height 0.8pt}
+\setlength{\parskip}{4pt}\setlength{\parindent}{0pt}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+{\LARGE\bfseries OsdagBridge LaTeX Report Generator\\[2pt] Refactoring \& Enhancements}\\[4pt]
+{\large Technical changes document}\par
+\vspace{4pt}\textcolor{osdagGreen}{\rule{\textwidth}{1pt}}
+
+\section*{1. Summary}
+The PDF design report was reviewed, refactored and extended in
+\file{src/osdagbridge/core/reports/}. All six requested items are implemented. In addition, the generated PDF
+was \emph{read page by page as a reviewer would} and every defect found was fixed (\S3). Results were verified
+by generating the report from real design runs (same input data) with the original code (\file{dev}, commit
+\texttt{d74f56d}) and with the changed code, and by an automated QA matrix over five bridge geometries.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}Y r r@{}}
+\toprule
+\textbf{Measure (sample design: 30\,m span, 7.5\,m carriageway, 4 girders)} & \textbf{Before} & \textbf{After}\\
+\midrule
+LaTeX errors in the compile log & 139 & \textbf{0}\\
+Long tables whose header repeats on every page & 1 of 49 & \textbf{51 of 51}\\
+Body text inside the footer band (automated check) & 1 (``G4'') & \textbf{0}\\
+Executive summary contradicting the results & yes (see \S3) & \textbf{no}\\
+Over-wide tables (Overfull \verb|\hbox| warnings) & 60 & 47\\
+Graphics embedded (charts, drawings, plots, logo) & 4 & 13\\
+Second design (42\,m span, 12\,m carriageway): LaTeX errors / footer overlaps & 152 / 1 & \textbf{0 / 0}\\
+QA matrix, 5 designs (20--50\,m span): errors / layout problems & -- & \textbf{0 / 0}\\
+Unit tests in \file{tests/unit} & 3 (placeholders) & 78\\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Note on the technology.} The task text mentions PyLaTeX. In this code base the report is assembled
+from raw LaTeX strings by the chapter generators (\file{chap1.py}--\file{chap9.py}) and compiled with
+\texttt{pdflatex}. The refactor keeps that architecture; the equivalent LaTeX constructs
+(\verb|longtable|, \verb|\endhead|, \verb|figure|) are produced by helper functions in the new style module.
+
+\section*{2. The six requested items}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.4cm} Y@{}}
+\toprule
+\textbf{Requirement} & \textbf{What was done}\\
+\midrule
+1. Repeated table headers &
+\verb|styles.longtable_head()| emits the caption, header row, \verb|\endfirsthead|, a ``(continued)'' caption
+and header row, and \verb|\endhead|. 49 hand-written tables were converted; the one table with an existing
+two-row header (\file{chap4.py}) already repeated correctly. Before, one table repeated its header and a
+second (\file{chap2.py}) had an \emph{empty} \verb|\endfirsthead\endhead| pair.\\[3pt]
+2. Footer overlap and spacing &
+Root causes in \S4. Fixed in \file{styles.py}, \file{chap5.py}. The new checker
+\file{tools/report\_layout\_check.py} finds the defect automatically (the original report fails it, the new
+one passes on every design tested).\\[3pt]
+3. Live-load tables (Ch.\ 3) &
+Three tables: \emph{Vehicular (IRC 6)} (one row per vehicle class selected in the UI, with its IRC~6
+reference and impact factor), \emph{Associated Vehicular Parameters} (design lanes, braking force,
+centrifugal force, eccentricity, with a \textbf{Unit} column) and \emph{Footpath}.\\[3pt]
+4. Utilization-ratio charts (Sec.\ 5.5) &
+\file{charts.py}: governing UR per primary element and UR of every check; green for UR $\leq 1.0$, red
+above, red dashed line at UR\,=\,1.0. Table 5.22 is also heat-shaded (green $\leq0.90$, amber $\leq1.0$,
+red $>1.0$).\\[3pt]
+5. Quantity charts (Ch.\ 7) &
+Steel tonnage (girders / cross bracing / end diaphragms) and concrete volume vs reinforcement weight
+(twin axes), from the BOQ values.\\[3pt]
+6. Central style module &
+\file{styles.py} (\S5). A unit test fails if a chapter file hard-codes colours, paddings, table setup or
+\texttt{longtable} boilerplate.\\
+\bottomrule
+\end{tabularx}
+
+\section*{3. Defects found by reading the report (all fixed)}
+\begin{enumerate}
+\item \textbf{The executive summary contradicted the results.} \emph{Overall Design Status: Fail} was printed
+next to the hard-coded lines ``Girder design pass, Cross bracing design pass, \dots'' (\file{executive_summary.py}).
+It now shows a verdict banner, a per-element outcome table and a chart, all derived from the same UR records
+as Table 5.22 (\file{verdict.py}). An element with no data is ``Not evaluated'', never ``Pass''.
+\item \textbf{Wrong units for girder dimensions.} \texttt{design()} converts section dimensions to metres in
+the input dictionary, and the report printed them with an ``mm'' suffix (depth \emph{1.67 mm} instead of
+1670\,mm). This also affects reports produced from the GUI. Fixed by \verb|_render_mm()|.
+\item \textbf{Table 4.2 (Reactions at Supports) was always empty:} its rows were literally empty strings in the
+template. It is now filled from the analysis summary (key load cases first).
+\item \textbf{Non-deterministic table order.} Table 4.1 listed load cases in Python \texttt{set} order, which
+changes between runs; the same design produced differently ordered reports. A stable, engineering-sensible
+order is now used (\verb|load_case_sort_key|).
+\item \textbf{Missing values:} number of traffic lanes (the report read a UI counter that is not in the design
+dictionary; now \verb|IRC6_2017.table_6|), bare ``kN'' cells for seismic forces the software never computes
+(now ``---''), missing units for girder spacing and deck thickness in the summary.
+\item \textbf{Layout polish:} justified text in narrow table columns (``Re-strained'', ``Spac- ing'') now
+ragged-right; placeholder boxes no longer run off the page; table headers capitalised consistently.
+\item \textbf{A regression of my own, found and reverted:} top-aligning \texttt{multirow} labels
+(\S4) also moved the two-row header of Table 4.1 out of its cell. The change now applies to data rows only.
+\end{enumerate}
+
+\section*{4. Root causes of the layout defects}
+\begin{enumerate}
+\item \textbf{``G4'' in the footer.} Girder labels are \verb|\multirow{n}{*}| cells, vertically centred over
+their group of rows. When the page broke \emph{inside} a group, the centred label was drawn below the last
+row on the page, i.e.\ over the footer. \texttt{longtable} cannot reliably be told to keep such a group
+together (\verb|\\*|, \verb|\penalty10000| and a larger \verb|LTchunksize| were tried, no effect), so the label
+is top-aligned (\verb|\multirow[t]|) and always stays in the first row of its group.
+\item \textbf{Footer note.} The ``* Software default value'' note was lifted into the body with
+\verb|\vspace{-20pt}|. It now sits in the footer below the rule; \texttt{footskip} is 40\,pt.
+\item \textbf{\texttt{\textbackslash needspace} before \texttt{longtable}.} It stranded a table head at the
+bottom of a page and printed a duplicated ``(continued)'' header on the next. Removed for long tables.
+\item \textbf{LaTeX errors (139).} Mostly ``Misplaced \verb|\noalign|'': a \verb|\caption| followed by
+\verb|\hline| with no row terminator. \verb|longtable_head()| always emits \verb|\caption{..}\\|. A
+``less-or-equal'' sign (U+2264) was unsupported by \texttt{pdflatex}; \verb|_tex()| now maps common Unicode
+symbols to LaTeX.
+\item \textbf{Table width.} Column widths exceeded the 15.9\,cm text width. \verb|fit_colspec()| scales the
+\texttt{cm} widths to fit, using the cell padding of the table's density.
+\item \textbf{Shaded UR cells.} \verb|\cellcolor| (colortbl) paints over a plain \verb+|+ border in the
+last column. The summary table therefore ends its column spec with a rule drawn as a column separator
+(\verb|RIGHT_RULE|), which is drawn on top of the colour; checked at 300\,dpi (every row has a black border
+pixel at the right edge).
+\end{enumerate}
+
+\section*{5. Style system and new modules}
+\begin{tabularx}{\textwidth}{@{}>{\ttfamily}l Y@{}}
+\toprule
+\textrm{\textbf{Module}} & \textbf{Responsibility}\\
+\midrule
+styles.py & single source of truth: DOCUMENT (class, margins, footskip, spacing), COLORS (palette incl.\
+status and heat-map colours), TABLES and TABLE\_DENSITY (padding, rules, row height), HEADER\_FOOTER, CHARTS;
+builders \verb|preamble()|, \verb|longtable_head()|, \verb|fit_colspec()|, \verb|ur_cell()|,
+\verb|verdict_banner()|, \verb|figure_block()|, status helpers\\
+verdict.py & per-element and overall pass/fail from one list of UR records (used by summary, charts, tables)\\
+charts.py & UR and quantity charts (matplotlib Agg, safe in the report worker thread)\\
+drawings.py & to-scale cross-section, plan and elevation schematics from the design inputs; used only when the
+GUI did not supply a CAD view (e.g.\ command-line reports), so no empty ``PLACEHOLDER'' boxes\\
+\bottomrule
+\end{tabularx}
+
+\textbf{Rationale.} One module owns every visual decision, so a global restyle is a one-line edit. Builders are
+plain functions returning LaTeX strings: easy to unit-test, no new dependency. Summary, charts and Table 5.22
+cannot disagree because they share one data source.
+
+\section*{6. Files}
+\begin{tabularx}{\textwidth}{@{}>{\ttfamily}l Y@{}}
+\toprule
+\textrm{\textbf{File}} & \textbf{Change}\\
+\midrule
+reports/styles.py, verdict.py, charts.py, drawings.py \textrm{(new)} & see \S5\\
+reports/report\_generator.py & preamble from styles; chapter 5 built first so the summary can use its UR records; chart images and fallback drawings\\
+reports/chap2.py -- chap5.py, chap7.py, chap8.py & table helpers, units, Table 4.2, ordering, live-load tables, heat map\\
+reports/executive\_summary.py & verdict-driven summary (no hard-coded outcomes)\\
+reports/report\_utils.py & Unicode mapping, \verb|_render_mm|, lane count, load-case order, placeholder spacing\\
+utils/codes/irc6\_2017.py & braking-force fix (\S7)\\
+tools/report\_layout\_check.py \textrm{(new)} & footer / overlap checker for generated PDFs\\
+tools/generate\_sample\_report.py, report\_qa\_matrix.py \textrm{(new)} & headless design + report in one command; QA over several geometries\\
+tests/unit/test\_report\_*.py \textrm{(new)} & 75 new unit tests\\
+\bottomrule
+\end{tabularx}
+
+\section*{7. Defects found in existing calculation code}
+\begin{itemize}
+\item \textbf{Fixed -- \texttt{IRC6\_2017.cl\_211\_2\_braking\_force()}} raised \texttt{UnboundLocalError} for
+\emph{every} lane count, so the report always showed ``N/A''. It also works with wheel loads in newtons while
+its docstring and the report assumed tonnes (a naive fix would print 1\,066\,296\,kN). Initialisation and unit
+are corrected; one Class~A train gives 108.69\,kN (20\,\% of 55.4\,t), checked by hand.
+\item \textbf{Not changed -- methodology.} The braking-force method (20\,\% of one Class~A train for one or two
+lanes) is the software's existing logic and should be reviewed by a structural engineer. Centrifugal force is
+not computed (no curvature input); the report states ``Not considered (straight alignment)''.
+\end{itemize}
+
+\section*{8. Verification}
+\textbf{Method.} The Osdag design pipeline is run headlessly (Qt offscreen, the code path of the \emph{Design}
+button; sample project: Mumbai, with weather data) and the report is generated from the resulting data, with
+the original and the changed code. The analysis plots are attached exactly as the desktop app does
+(\verb|capture_report_figures|).
+
+\begin{center}
+\begin{tabular}{rrrrrr}
+\toprule
+Span (m) & Carriageway (m) & Pages & LaTeX errors & Layout problems & Time (s)\\
+\midrule
+20 & 7.5 & 56 & 0 & 0 & 31\\
+30 & 7.5 & 56 & 0 & 0 & 36\\
+36 & 9.0 & 56 & 0 & 0 & 40\\
+42 & 12.0 & 63 & 0 & 0 & 77\\
+50 & 15.0 & 66 & 0 & 0 & 124\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Limits.} Chapter 6 3D CAD views and the 3D view of the executive summary need the GUI viewer, so they
+remain placeholders in command-line reports; the new schematics replace only the cross-section, plan and
+elevation. In the ``Before'' PDFs those slots are empty because the original code has no fallback (the
+desktop app would supply CAD images). End-diaphragm quantities are not produced by the BOQ module (``N.A.''
+in the chart). The weather inputs are sample values. The change was verified with a standard TeX Live
+installation, not with the Windows \texttt{osdag\_latex\_env} bundle; it adds no LaTeX package.
+
+\section*{9. Reproduce}
+\begin{verbatim}
+python -m pytest tests/unit                          # 78 tests
+python tools/generate_sample_report.py --span 30 --carriageway 7.5 --out out
+python tools/report_qa_matrix.py --out qa_out        # 5 designs, exits 1 on any problem
+python tools/report_layout_check.py out/Report.pdf   # needs poppler pdftotext
+\end{verbatim}
+\end{document}

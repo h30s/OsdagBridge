@@ -6,6 +6,15 @@ from osdagbridge.core.utils.common import (
 )
 
 
+# Applied AFTER escaping, so the inserted $...$ math is not itself escaped.
+_UNICODE_TO_TEX = {
+    '≤': r'$\leq$', '≥': r'$\geq$', '±': r'$\pm$', '≠': r'$\neq$',
+    '°': r'$^{\circ}$', 'μ': r'$\mu$', 'Ω': r'$\Omega$',
+    '²': r'$^{2}$', '³': r'$^{3}$', '–': '--', '—': '---',
+    '→': r'$\rightarrow$',
+}
+
+
 def _tex(value):
     """Escape a Python value for safe LaTeX embedding."""
     s = str(value) if value is not None else ''
@@ -22,7 +31,59 @@ def _tex(value):
                     ('~', r'\textasciitilde{}'), ('^', r'\^{}')]:
         s = s.replace(ch, esc)
     s = s.replace(':', r':\allowbreak{}')
+    # Unicode math/typographic symbols pdflatex (T1/OT1) cannot typeset.
+    for uni, tex in _UNICODE_TO_TEX.items():
+        s = s.replace(uni, tex)
     return s
+
+
+_LC_GROUPS = ("envelope uls", "envelope sls", "1.0 dl", "1.0 dw", "sw", "dd", "1.0 ll", "basic", "accidental",
+              "seismic", "sls_rare", "sls_frequent", "sls_qp")
+
+
+def load_case_sort_key(name):
+    """Stable display order for load cases (the analysis returns them in set order,
+    which changes from run to run). Envelopes, permanent loads, live load, then the
+    ULS / accidental / seismic / SLS combinations, each sorted by their number."""
+    import re
+    n = str(name).strip().lower()
+    group = next((i for i, g in enumerate(_LC_GROUPS) if n == g or n.startswith(g)), len(_LC_GROUPS))
+    nums = tuple(int(x) for x in re.findall(r"\d+", n))
+    return (group, nums, n)
+
+
+def design_lane_count(input_dict):
+    """Number of design lanes (IRC 6 Table 6) from the carriageway width, or None.
+
+    The UI lane counter (KEY_WC_LD_LANE_TABLE_COUNT) is not stored in the design
+    dictionary, so the report derives the count the same way the analysis does.
+    """
+    try:
+        from osdagbridge.core.utils.codes.irc6_2017 import IRC6_2017
+        return int(IRC6_2017.table_6(float(input_dict.get("geometry.carriageway_width"))))
+    except Exception:
+        return None
+
+
+def _render_mm(source_dict, key, unit=" mm"):
+    """Girder dimensions for display, in mm.
+
+    PlateGirderBridge.design() converts girder section dimensions from mm to SI
+    metres in the input dictionary, so a design report built afterwards sees
+    e.g. 1.67 for a 1670 mm depth. Values below 10 are therefore metres (no steel
+    girder dimension is below 10 mm or above 10 m); larger values are already mm.
+    Non-numeric values (e.g. "All") are shown as-is.
+    """
+    val = source_dict.get(key)
+    if val in ("", None):
+        return ""
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return _tex(val)          # e.g. "All": no unit
+    if abs(f) < 10.0:
+        f *= 1000.0
+    return f"{f:g}" + unit
 
 
 def _render_value(source_dict, key, unit=""):
@@ -110,6 +171,6 @@ def _fig_embed(path, caption, width=r'\textwidth', height=None):
     # fbox placeholder — matches template exactly
     return (r'\noindent\fbox{\parbox{0.97\textwidth}{' + '\n'
             r'\textit{[ PLACEHOLDER: ' + caption + r' ]}' + '\n'
-            r'}}')
+            r'}}' + '\n\\par\\medskip')
 
 
